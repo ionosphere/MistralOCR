@@ -5,6 +5,58 @@ import os
 from mistralai import Mistral
 from PIL import Image
 import io
+from dotenv import load_dotenv
+
+load_dotenv()
+
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+
+SYSTEM_PROMPT = """From the user prompt coming from purchase invoice below, extract informations strictly as instructed.
+    Most of the time, the pattern of a purchase invoice is composed of supplier informations, invoice informations and one or many invoice lines.
+    Information come from France in french language.
+    Return the purchase informations in JSON format like an API according to the schema.
+    Do not return 'description', 'type' or 'format' attributes in the response.
+    Use it only to detect correct value of each attributes.
+    example of a response : { supplier: { name: "AXA", address: "10 rue du Bouil bleu", postal_code: "17250", ... }, invoice: {number: "FA25632", ... }, items: [{number: '1', ... }, {number: '2', ... }, ...]}.
+    for the items, try to detect the role of the item in 'merchandise' or 'service' in role attribute.
+    for all the date, try to convert it in the following format : 'DD/MM/YYYY'.
+    for the items, try to classify it like an accountant in nature attribute.
+"""
+
+JSON_SCHEMA = {
+                "name": "PurchaseInvoice",
+                "schema_definition": {
+                    "$defs": {
+                        "Explanation": {
+                            "properties": {
+                                "explanation": {
+                                    "title": "Explanation",
+                                    "type": "string",
+                                },
+                                "output": {"title": "Output", "type": "string"},
+                            },
+                            "required": ["explanation", "output"],
+                            "title": "Explanation",
+                            "type": "object",
+                            "additionalProperties": False,
+                        }
+                    },
+                    "properties": {
+                        "steps": {
+                            "items": {"$ref": "#/$defs/Explanation"},
+                            "title": "Steps",
+                            "type": "array",
+                        },
+                        "final_answer": {"title": "Final Answer", "type": "string"},
+                    },
+                    "required": ["steps", "final_answer"],
+                    "title": "MathDemonstration",
+                    "type": "object",
+                    "additionalProperties": False,
+                }, 
+                "description": None,
+                "strict": True
+}
 
 def upload_pdf(client, content, filename):
     """
@@ -36,6 +88,51 @@ def upload_pdf(client, content, filename):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+def extract_json_from_doc(client, document_source):
+    """
+    Extracts JSON data from a document using Mistral's OCR API.
+
+    Args:
+        client (Mistral): Mistral API client instance.
+        document_source (dict): The source of the document (URL or image).
+
+    Returns:
+        dict: The extracted JSON data.
+    """
+    # Specify model
+    model = "mistral-small-latest"
+
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "what is the last sentence in the document"
+                },
+                document_source
+            ]
+        }
+    ]
+
+    print(messages)
+
+    chat_response = client.chat.complete(
+        model=model,
+        messages=messages,
+        response_format = {
+          "type": "json_object" #, "json_schema": JSON_SCHEMA
+      }
+    )
+
+    print(chat_response.choices[0].message.content)
+
+    return chat_response.choices[0].message.content
 
 def process_ocr(client, document_source):
     """
@@ -70,10 +167,13 @@ def main():
     """
     Main function to run the Streamlit app.
     """
-    st.set_page_config(page_title="Mistral OCR Processor", layout="wide")
+    st.set_page_config(page_title="Facture Agri Mistral OCR ", layout="wide")
     
     # Sidebar: Authentication for Mistral API
-    api_key = st.sidebar.text_input("Mistral API Key", type="password")
+    if not MISTRAL_API_KEY:
+        api_key = st.sidebar.text_input("Mistral API Key", type="password")
+    else:
+        api_key = MISTRAL_API_KEY
     
     if not api_key:
         st.warning("Enter API key to continue")
@@ -83,10 +183,10 @@ def main():
     client = Mistral(api_key=api_key)
     
     # Main app interface
-    st.header("Mistral OCR Processor")
+    st.header("Facture Agri Mistral OCR")
     
     # Input method selection: URL, PDF Upload, or Image Upload
-    input_method = st.radio("Select Input Type:", ["URL", "PDF Upload", "Image Upload"])
+    input_method = st.radio("Format de la facture:", ["URL", "PDF", "Image"])
     
     document_source = None
     preview_content = None
@@ -103,7 +203,7 @@ def main():
             preview_content = url
             content_type = "url"
     
-    elif input_method == "PDF Upload":
+    elif input_method == "PDF":
         # Handle PDF file upload
         uploaded_file = st.file_uploader("Choose PDF file", type=["pdf"])
         if uploaded_file:
@@ -124,7 +224,7 @@ def main():
             }
             content_type = "pdf"
     
-    elif input_method == "Image Upload":
+    elif input_method == "Image":
         # Handle image file upload
         uploaded_image = st.file_uploader("Choose Image file", type=["png", "jpg", "jpeg"])
         if uploaded_image:
@@ -143,6 +243,19 @@ def main():
                 "image_url": f"data:image/png;base64,{img_str}"
             }
             content_type = "image"
+    
+    if document_source and st.button("Extract JSON"):
+        # Process the document when the user clicks the button
+        with st.spinner("Extracting JSON content..."):
+            try:
+                ocr_response = extract_json_from_doc(client, document_source)
+
+                with st.expander("Response"):
+                    st.json(ocr_response)
+
+            except Exception as e:
+                # Display an error message if processing fails
+                st.error(f"Processing error: {str(e)}")
     
     if document_source and st.button("Process Document"):
         # Process the document when the user clicks the button

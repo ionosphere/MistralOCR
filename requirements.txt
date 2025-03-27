@@ -1,2 +1,4 @@
 streamlit
 mistralai
+streamlit_chat
+python-dotenv
